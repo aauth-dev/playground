@@ -3184,6 +3184,29 @@
     return '<span class="step-status step-status-error">\u2717</span>';
   }
   var CHEVRON_SVG = `<svg class="section-chevron" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="3" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5"/></svg>`;
+  var PARTY_BADGES = [
+    ["Agent Provider", "ap"],
+    ["Person Server", "ps"],
+    ["Notes Resource", "rs"],
+    ["Notes API", "rs"],
+    ["Whoami", "rs"]
+  ];
+  function applyPartyBadges(text) {
+    if (!text) return text;
+    let out = text;
+    for (const [name, key] of PARTY_BADGES) {
+      out = out.split(name).join(`<span class="party-badge party-${key}">${name}</span>`);
+    }
+    return out;
+  }
+  function partyForLabel(label, section) {
+    if (label) {
+      for (const [name, key] of PARTY_BADGES) {
+        if (label.includes(name)) return key;
+      }
+    }
+    return section?.dataset?.party || null;
+  }
   var __copyIdCounter = 0;
   function nextCopyId() {
     return `copy-tgt-${++__copyIdCounter}`;
@@ -3191,13 +3214,14 @@
   function isExpandable(content) {
     return !!content && !/<details[\s>]/i.test(content);
   }
-  function addLogSection(title) {
+  function addLogSection(title, defaultParty) {
     const log = currentLog();
     if (!log) return;
     showLog();
     const section = document.createElement("details");
     section.className = "log-section";
     section.open = true;
+    if (defaultParty) section.dataset.party = defaultParty;
     const summary = document.createElement("summary");
     summary.className = "log-section-heading";
     summary.textContent = title;
@@ -3216,11 +3240,12 @@
     const target = currentSection(log);
     const expandable = isExpandable(content);
     const step = expandable ? document.createElement("details") : document.createElement("div");
-    step.className = `log-step section-group ${status}${expandable ? "" : " log-step-static"}`;
+    const party = partyForLabel(label, target);
+    step.className = `log-step section-group ${status}${expandable ? "" : " log-step-static"}${party ? ` party-bg-${party}` : ""}`;
     if (expandable) step.open = true;
     const heading = document.createElement(expandable ? "summary" : "div");
     heading.className = "section-heading";
-    heading.innerHTML = `<span class="step-label">${statusIndicatorHtml(status)}<span class="step-text">${label}</span></span>${expandable ? CHEVRON_SVG : ""}`;
+    heading.innerHTML = `<span class="step-label">${statusIndicatorHtml(status)}<span class="step-text">${applyPartyBadges(label)}</span></span>${expandable ? CHEVRON_SVG : ""}`;
     step.appendChild(heading);
     const body = document.createElement("div");
     body.className = "log-step-body";
@@ -3236,11 +3261,13 @@
   function resolveStep(step, status, label) {
     if (!step) return;
     const isStatic = step.classList.contains("log-step-static");
-    step.className = `log-step section-group ${status}${isStatic ? " log-step-static" : ""}`;
+    const section = step.closest("details.log-section");
+    const party = partyForLabel(label, section);
+    step.className = `log-step section-group ${status}${isStatic ? " log-step-static" : ""}${party ? ` party-bg-${party}` : ""}`;
     const statusEl = step.querySelector(".step-status");
     const textEl = step.querySelector(".step-text");
     if (statusEl) statusEl.outerHTML = statusIndicatorHtml(status);
-    if (textEl) textEl.textContent = label;
+    if (textEl) textEl.innerHTML = applyPartyBadges(label);
     persistActiveLog();
   }
   function appendStepBody(step, html) {
