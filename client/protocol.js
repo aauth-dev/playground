@@ -263,16 +263,43 @@ function applyPartyBadges(text) {
   }
   return out
 }
-// Pick the party tint for a step: first counterparty name found in the
-// label wins, otherwise fall back to the section's default party
-// (set by addLogSection for single-party ceremonies). Returns null if
-// neither matches — step renders untinted.
-function partyForLabel(label, section) {
+// Pick the party tint for a step. Order:
+//   1. counterparty name found in the label (e.g. "Person Server")
+//   2. inherit from the immediate predecessor step in the same section
+//      — covers labels like "Interaction Completed" or "Auth Token
+//      received" that don't name a party but logically belong to the
+//      same counterparty as the step that produced them
+//   3. section default set by addLogSection (currently unused)
+// Returns null when none match — step renders untinted (used for
+// agent-local actions like "Agent: generate signing key").
+function partyFromClass(el) {
+  if (!el?.classList) return null
+  for (const cls of el.classList) {
+    if (cls.startsWith('party-bg-')) return cls.slice('party-bg-'.length)
+  }
+  return null
+}
+function previousStep(section) {
+  if (!section?.children) return null
+  for (let i = section.children.length - 1; i >= 0; i--) {
+    const c = section.children[i]
+    if (c.classList?.contains('log-step')) return c
+  }
+  return null
+}
+function previousStepBefore(step) {
+  let prev = step?.previousElementSibling
+  while (prev && !prev.classList?.contains('log-step')) prev = prev.previousElementSibling
+  return prev || null
+}
+function partyForLabel(label, section, prevStep) {
   if (label) {
     for (const [name, key] of PARTY_BADGES) {
       if (label.includes(name)) return key
     }
   }
+  const inherited = partyFromClass(prevStep)
+  if (inherited) return inherited
   return section?.dataset?.party || null
 }
 
@@ -330,7 +357,7 @@ function addLogStep(label, status, content) {
   const target = currentSection(log)
   const expandable = isExpandable(content)
   const step = expandable ? document.createElement('details') : document.createElement('div')
-  const party = partyForLabel(label, target)
+  const party = partyForLabel(label, target, previousStep(target))
   step.className = `log-step section-group ${status}${expandable ? '' : ' log-step-static'}${party ? ` party-bg-${party}` : ''}`
   if (expandable) step.open = true
 
@@ -360,7 +387,7 @@ function resolveStep(step, status, label) {
   // only flip status, but a few rewrite the label too (e.g. consent
   // prompt → "Interaction Completed"), and we want the tint to follow.
   const section = step.closest('details.log-section')
-  const party = partyForLabel(label, section)
+  const party = partyForLabel(label, section, previousStepBefore(step))
   step.className = `log-step section-group ${status}${isStatic ? ' log-step-static' : ''}${party ? ` party-bg-${party}` : ''}`
   const statusEl = step.querySelector('.step-status')
   const textEl = step.querySelector('.step-text')

@@ -3199,12 +3199,34 @@
     }
     return out;
   }
-  function partyForLabel(label, section) {
+  function partyFromClass(el) {
+    if (!el?.classList) return null;
+    for (const cls of el.classList) {
+      if (cls.startsWith("party-bg-")) return cls.slice("party-bg-".length);
+    }
+    return null;
+  }
+  function previousStep(section) {
+    if (!section?.children) return null;
+    for (let i = section.children.length - 1; i >= 0; i--) {
+      const c = section.children[i];
+      if (c.classList?.contains("log-step")) return c;
+    }
+    return null;
+  }
+  function previousStepBefore(step) {
+    let prev = step?.previousElementSibling;
+    while (prev && !prev.classList?.contains("log-step")) prev = prev.previousElementSibling;
+    return prev || null;
+  }
+  function partyForLabel(label, section, prevStep) {
     if (label) {
       for (const [name, key] of PARTY_BADGES) {
         if (label.includes(name)) return key;
       }
     }
+    const inherited = partyFromClass(prevStep);
+    if (inherited) return inherited;
     return section?.dataset?.party || null;
   }
   var __copyIdCounter = 0;
@@ -3240,7 +3262,7 @@
     const target = currentSection(log);
     const expandable = isExpandable(content);
     const step = expandable ? document.createElement("details") : document.createElement("div");
-    const party = partyForLabel(label, target);
+    const party = partyForLabel(label, target, previousStep(target));
     step.className = `log-step section-group ${status}${expandable ? "" : " log-step-static"}${party ? ` party-bg-${party}` : ""}`;
     if (expandable) step.open = true;
     const heading = document.createElement(expandable ? "summary" : "div");
@@ -3262,7 +3284,7 @@
     if (!step) return;
     const isStatic = step.classList.contains("log-step-static");
     const section = step.closest("details.log-section");
-    const party = partyForLabel(label, section);
+    const party = partyForLabel(label, section, previousStepBefore(step));
     step.className = `log-step section-group ${status}${isStatic ? " log-step-static" : ""}${party ? ` party-bg-${party}` : ""}`;
     const statusEl = step.querySelector(".step-status");
     const textEl = step.querySelector(".step-text");
