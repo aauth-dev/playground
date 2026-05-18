@@ -11,12 +11,43 @@ import {
   sanitizeCnfJwk,
 } from './crypto'
 import { generateAgentLocal } from './agent-local'
+import { emit, emitVerifyFailed } from './events'
 
 type HonoEnv = { Bindings: Env }
 
 const app = new Hono<HonoEnv>()
 
 app.use('*', cors())
+
+// Catch every unhandled exception, emit a structured error event with
+// a stack trace, and return a clean 500. Without this, unprotected KV
+// and crypto calls would bubble to Hono's default 500 with no context.
+app.onError((err, c) => {
+  const error = err instanceof Error ? err : new Error(String(err))
+  emit(c, {
+    event: 'aauth.unhandled_error',
+    level: 50,
+    msg: error.message,
+    route: new URL(c.req.url).pathname,
+    method: c.req.method,
+    error_name: error.name,
+    error_message: error.message,
+    error_stack: error.stack,
+  })
+  return c.json({ error: 'internal error' }, 500)
+})
+
+// Helper: extract the error message from a Hono Response built by one
+// of the verify helpers, without consuming the response body that's
+// about to be returned to the caller.
+async function readVerifyError(res: Response): Promise<string | undefined> {
+  try {
+    const body = (await res.clone().json()) as { error?: string }
+    return body?.error
+  } catch {
+    return undefined
+  }
+}
 
 // ── Resource scope metadata ──
 //
@@ -123,7 +154,10 @@ app.get('/.well-known/jwks.json', async (c) => {
 
 app.post('/bootstrap', async (c) => {
   const verifyRes = await verifySigHwk(c)
-  if (verifyRes instanceof Response) return verifyRes
+  if (verifyRes instanceof Response) {
+    emitVerifyFailed(c, 'sig_hwk_failed', { detail: await readVerifyError(verifyRes) })
+    return verifyRes
+  }
 
   let body: { ps?: string }
   try {
@@ -148,17 +182,31 @@ app.post('/bootstrap', async (c) => {
   // same key on a return visit. A fresh key always gets a fresh name —
   // we never re-use a local-part across distinct keys.
   let agentLocal = await c.env.WEBAUTHN_KV.get(`agent:name:${verifyRes.jkt}`)
+  const fresh = !agentLocal
   if (!agentLocal) {
     agentLocal = generateAgentLocal()
     await c.env.WEBAUTHN_KV.put(`agent:name:${verifyRes.jkt}`, agentLocal, { expirationTtl: AGENT_NAME_TTL_SECONDS })
     await c.env.WEBAUTHN_KV.put(`agent:key:${agentLocal}`, verifyRes.jkt, { expirationTtl: AGENT_NAME_TTL_SECONDS })
   }
 
-  return c.json(await mintAgentToken(c.env, {
-    aauthSub: `aauth:${agentLocal}@${host}`,
+  const aauthSub = `aauth:${agentLocal}@${host}`
+  const token = await mintAgentToken(c.env, {
+    aauthSub,
     psUrl: body.ps,
     jwk: verifyRes.publicJwk,
-  }))
+  })
+
+  emit(c, {
+    event: 'aauth.agent_token.minted',
+    msg: fresh ? 'bootstrap: minted token for new agent' : 'bootstrap: minted token for existing agent',
+    route: '/bootstrap',
+    agent_sub: aauthSub,
+    agent_jkt: verifyRes.jkt,
+    ps: body.ps,
+    fresh,
+  })
+
+  return c.json(token)
 })
 
 // ── Refresh ──
@@ -171,7 +219,10 @@ app.post('/bootstrap', async (c) => {
 
 app.post('/refresh', async (c) => {
   const verifyRes = await verifySigHwk(c)
-  if (verifyRes instanceof Response) return verifyRes
+  if (verifyRes instanceof Response) {
+    emitVerifyFailed(c, 'sig_hwk_failed', { detail: await readVerifyError(verifyRes) })
+    return verifyRes
+  }
 
   let body: { ps?: string }
   try {
@@ -182,15 +233,28 @@ app.post('/refresh', async (c) => {
 
   const agentLocal = await c.env.WEBAUTHN_KV.get(`agent:name:${verifyRes.jkt}`)
   if (!agentLocal) {
+    emitVerifyFailed(c, 'refresh_unknown_agent', { agent_jkt: verifyRes.jkt })
     return c.json({ error: 'agent not enrolled — bootstrap first' }, 404)
   }
 
   const host = new URL(c.env.ORIGIN).hostname
-  return c.json(await mintAgentToken(c.env, {
-    aauthSub: `aauth:${agentLocal}@${host}`,
+  const aauthSub = `aauth:${agentLocal}@${host}`
+  const token = await mintAgentToken(c.env, {
+    aauthSub,
     psUrl: body.ps,
     jwk: verifyRes.publicJwk,
-  }))
+  })
+
+  emit(c, {
+    event: 'aauth.agent_token.minted',
+    msg: 'refresh: re-minted token for existing agent',
+    route: '/refresh',
+    agent_sub: aauthSub,
+    agent_jkt: verifyRes.jkt,
+    ps: body.ps,
+  })
+
+  return c.json(token)
 })
 
 // ── Agent forget ──
@@ -202,11 +266,25 @@ app.post('/refresh', async (c) => {
 // the key can release its name.
 app.post('/agent/forget', async (c) => {
   const verifyRes = await verifySigHwk(c)
-  if (verifyRes instanceof Response) return verifyRes
+  if (verifyRes instanceof Response) {
+    emitVerifyFailed(c, 'sig_hwk_failed', { detail: await readVerifyError(verifyRes) })
+    return verifyRes
+  }
 
   const agentLocal = await c.env.WEBAUTHN_KV.get(`agent:name:${verifyRes.jkt}`)
   await c.env.WEBAUTHN_KV.delete(`agent:name:${verifyRes.jkt}`)
   if (agentLocal) await c.env.WEBAUTHN_KV.delete(`agent:key:${agentLocal}`)
+
+  const host = new URL(c.env.ORIGIN).hostname
+  emit(c, {
+    event: 'aauth.agent_forget',
+    msg: 'agent identity forgotten',
+    route: '/agent/forget',
+    agent_sub: agentLocal ? `aauth:${agentLocal}@${host}` : undefined,
+    agent_jkt: verifyRes.jkt,
+    had_existing: !!agentLocal,
+  })
+
   return c.json({ ok: true })
 })
 
@@ -255,7 +333,10 @@ app.post('/authorize', async (c) => {
     verifyInner: ourJwksVerifier(ourJwk),
     expectedIss: origin,
   })
-  if (verifyRes instanceof Response) return verifyRes
+  if (verifyRes instanceof Response) {
+    emitVerifyFailed(c, 'sig_jwt_failed', { detail: await readVerifyError(verifyRes) })
+    return verifyRes
+  }
 
   const agentPayload = verifyRes.innerPayload as Record<string, unknown>
 
@@ -347,6 +428,19 @@ app.post('/authorize', async (c) => {
 
   const resourceToken = await signJWT(rtHeader, rtPayload, privateKey)
 
+  emit(c, {
+    event: 'aauth.resource_token.minted',
+    msg: 'resource_token minted for agent',
+    route: '/authorize',
+    agent_sub: agentPayload.sub,
+    agent_jkt: agentJkt,
+    caller_jkt: verifyRes.callerJkt,
+    requested_scope: body.scope,
+    granted_scope: body.scope,
+    ps: body.ps,
+    ps_issuer: psMetadata.issuer,
+  })
+
   return c.json({
     ps_metadata: psMetadata,
     ps_metadata_url: psMetadataUrl,
@@ -371,18 +465,45 @@ app.get('/api/demo', async (c) => {
   const verifyRes = await verifySigJwt(c, {
     verifyInner: psJwksVerifier(),
   })
-  if (verifyRes instanceof Response) return verifyRes
+  if (verifyRes instanceof Response) {
+    emitVerifyFailed(c, 'sig_jwt_failed', { detail: await readVerifyError(verifyRes) })
+    return verifyRes
+  }
 
   const payload = verifyRes.innerPayload as Record<string, unknown>
-  if (payload.aud !== origin) return c.json({ error: 'auth_token aud mismatch' }, 401)
+  if (payload.aud !== origin) {
+    emitVerifyFailed(c, 'auth_token_aud_mismatch', {
+      aud_actual: payload.aud,
+      aud_expected: origin,
+      caller_jkt: verifyRes.callerJkt,
+    })
+    return c.json({ error: 'auth_token aud mismatch' }, 401)
+  }
 
   const scopeStr = typeof payload.scope === 'string' ? payload.scope : ''
   const scopes = scopeStr.split(/\s+/).filter(Boolean)
   if (!scopes.includes('playground.demo')) {
+    emitVerifyFailed(c, 'insufficient_scope', {
+      required: 'playground.demo',
+      granted: scopes,
+      caller_jkt: verifyRes.callerJkt,
+    })
     return c.json({ error: 'insufficient_scope', required: 'playground.demo', granted: scopes }, 403)
   }
 
   const name = (payload.name as string) || (payload.given_name as string) || 'friend'
+
+  emit(c, {
+    event: 'aauth.demo_call',
+    msg: 'demo endpoint called successfully',
+    route: '/api/demo',
+    agent_sub: payload.act ? (payload.act as { sub?: string }).sub : payload.sub,
+    auth_token_sub: payload.sub,
+    caller_jkt: verifyRes.callerJkt,
+    scope: scopeStr,
+    iss: payload.iss,
+  })
+
   return c.json({
     hello: name,
     granted_scopes: scopes,

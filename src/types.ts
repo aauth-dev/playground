@@ -4,6 +4,7 @@ export interface Env {
   SIGNING_KEY: string // Ed25519 private key (JWK JSON), set as a secret
   WEBAUTHN_KV: KVNamespace
   AGENT_LOGO_URI?: string
+  EVENTS_QUEUE: Queue // bound to aauth-events queue; consumed by aauth-shipper
 }
 
 export interface AgentTokenPayload {

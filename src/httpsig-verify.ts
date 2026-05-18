@@ -28,6 +28,7 @@ export interface SigJwtVerifyResult {
   rawBody: string
   innerJwt: string
   innerPayload: Record<string, unknown> | null
+  callerJkt: string // thumbprint of the key that signed the HTTP request
 }
 
 export async function verifySigJwt(
@@ -75,7 +76,7 @@ export async function verifySigJwt(
     }
   }
 
-  return { rawBody, innerJwt, innerPayload }
+  return { rawBody, innerJwt, innerPayload, callerJkt: sigResult.thumbprint }
 }
 
 // Convenience: build a verifyInner that uses our own JWKS. For tokens we

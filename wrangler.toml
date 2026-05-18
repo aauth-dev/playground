@@ -20,3 +20,7 @@ id = "8f3528fb8a884a7fa5d6e506ee783eca"
 [[routes]]
 pattern = "playground.aauth.dev"
 custom_domain = true
+
+[[queues.producers]]
+queue = "aauth-events"
+binding = "EVENTS_QUEUE"
